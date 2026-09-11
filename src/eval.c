@@ -1704,6 +1704,7 @@ done:
 static void dump_bftw_flags(enum bftw_flags flags) {
 	DEBUG_FLAG(flags, 0);
 	DEBUG_FLAG(flags, BFTW_STAT);
+	DEBUG_FLAG(flags, BFTW_DIR_STAT);
 	DEBUG_FLAG(flags, BFTW_RECOVER);
 	DEBUG_FLAG(flags, BFTW_POST_ORDER);
 	DEBUG_FLAG(flags, BFTW_FOLLOW_ROOTS);

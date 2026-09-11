@@ -780,7 +780,8 @@ static void bftw_stat_recycle(struct bftw_cache *cache, struct bftw_file *file) 
 	struct bfs_stat *lstat_buf = (struct bfs_stat *)bufs->lstat_buf;
 	if (stat_buf) {
 		arena_free(&cache->stat_bufs, stat_buf);
-	} else if (lstat_buf) {
+	}
+	if (lstat_buf && lstat_buf != stat_buf) {
 		arena_free(&cache->stat_bufs, lstat_buf);
 	}
 
@@ -861,6 +862,8 @@ struct bftw_state {
 	struct bfs_stat stat_buf;
 	/** lstat() buffer storage. */
 	struct bfs_stat lstat_buf;
+	/** Storage for stat info read along with the current directory entry. */
+	struct bfs_stat dirent_stat_buf;
 };
 
 /** Check if we have to buffer files before visiting them. */
@@ -942,6 +945,9 @@ static int bftw_state_init(struct bftw_state *state, const struct bftw_args *arg
 
 	if (state->flags & BFTW_WHITEOUTS) {
 		state->dir_flags |= BFS_DIR_WHITEOUTS;
+	}
+	if (state->flags & BFTW_DIR_STAT) {
+		state->dir_flags |= BFS_DIR_STAT;
 	}
 
 	SLIST_INIT(&state->to_close);
@@ -1453,8 +1459,38 @@ static bool bftw_must_stat(const struct bftw_state *state, size_t depth, enum bf
 	}
 }
 
+/**
+ * Get the stat info read along with the current directory entry, if it
+ * satisfies the stat() flags bftw() will use for the entry.
+ */
+static const struct bfs_stat *bftw_dirent_stat(const struct bftw_state *state, size_t depth) {
+	const struct bfs_dirent *de = state->de;
+	if (!de || !de->lstat) {
+		return NULL;
+	}
+
+	// Symlinks need a real stat() call to follow them anyway, and caching
+	// their stat info first would leave two buffers to recycle
+	if (de->type == BFS_LNK && !(bftw_stat_flags(state, depth) & BFS_STAT_NOFOLLOW)) {
+		return NULL;
+	}
+
+	return de->lstat;
+}
+
+/** Check if the bftw_stat cache already holds what bftw() will ask for. */
+static bool bftw_stat_is_cached(const struct bftw_stat *bufs, enum bfs_stat_flags flags) {
+	if (flags & BFS_STAT_NOFOLLOW) {
+		return bufs->lstat_err == 0;
+	} else {
+		return bufs->stat_err == 0;
+	}
+}
+
 /** stat() a file asynchronously. */
 static int bftw_ioq_stat(struct bftw_state *state, struct bftw_file *file) {
+	bfs_assert(file->stat_bufs.stat_err < 0 && file->stat_bufs.lstat_err < 0);
+
 	if (bftw_ioq_reserve(state) != 0) {
 		goto fail;
 	}
@@ -1499,6 +1535,10 @@ static bool bftw_should_ioq_stat(struct bftw_state *state, struct bftw_file *fil
 		return false;
 	}
 #endif
+
+	if (bftw_stat_is_cached(&file->stat_bufs, bftw_stat_flags(state, file->depth))) {
+		return false;
+	}
 
 	return bftw_must_stat(state, file->depth, file->type, file->name);
 }
@@ -1701,6 +1741,12 @@ static void bftw_init_ftwbuf(struct bftw_state *state, enum bftw_visit visit) {
 		ftwbuf->depth = file->depth + 1;
 		ftwbuf->type = de->type;
 		ftwbuf->nameoff = bftw_child_nameoff(file);
+
+		const struct bfs_stat *lstat = bftw_dirent_stat(state, ftwbuf->depth);
+		if (lstat) {
+			state->dirent_stat_buf = *lstat;
+			bftw_stat_cache(&ftwbuf->stat_bufs, BFS_STAT_NOFOLLOW, &state->dirent_stat_buf, 0);
+		}
 	} else if (file) {
 		parent = file->parent;
 		ftwbuf->depth = file->depth;
@@ -2028,6 +2074,15 @@ static int bftw_visit(struct bftw_state *state, const char *name) {
 
 		if (state->de) {
 			file->type = state->de->type;
+		}
+
+		const struct bfs_stat *lstat = bftw_dirent_stat(state, file->depth);
+		if (lstat) {
+			struct bfs_stat *buf = arena_alloc(&cache->stat_bufs);
+			if (buf) {
+				*buf = *lstat;
+				bftw_stat_cache(&file->stat_bufs, BFS_STAT_NOFOLLOW, buf, 0);
+			}
 		}
 
 		bftw_push_file(state, file);

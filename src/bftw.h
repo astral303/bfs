@@ -161,6 +161,13 @@ enum bftw_flags {
 	BFTW_BUFFER        = 1 << 9,
 	/** Include whiteouts in the search results. */
 	BFTW_WHITEOUTS     = 1 << 10,
+	/**
+	 * Read stat info along with directory entries, where the platform
+	 * supports it (see BFS_DIR_STAT).  A directory listing includes no stat
+	 * info for subdirectories, and this flag adds no stat() calls for them.
+	 * BFTW_STAT calls stat() on every file, directories included.
+	 */
+	BFTW_DIR_STAT      = 1 << 11,
 };
 
 /**
