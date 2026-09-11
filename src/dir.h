@@ -27,9 +27,19 @@
 #endif
 
 /**
+ * Whether the implementation uses getattrlistbulk() (macOS), which returns
+ * directory entries together with their bfs_stat(BFS_STAT_NOFOLLOW) info.
+ */
+#ifndef BFS_USE_GETATTRLISTBULK
+#  define BFS_USE_GETATTRLISTBULK (__APPLE__ && BFS_HAS_GETATTRLISTBULK && !BFS_USE_GETDENTS)
+#endif
+
+/**
  * A directory.
  */
 struct bfs_dir;
+
+struct bfs_stat;
 
 /**
  * File types.
@@ -74,6 +84,13 @@ struct bfs_dirent {
 	enum bfs_type type;
 	/** The name of this file. */
 	const char *name;
+	/**
+	 * bfs_stat(BFS_STAT_NOFOLLOW) info for this file, or NULL if unavailable.
+	 * Only filled when the directory was opened with BFS_DIR_STAT and the
+	 * implementation supports it.  Like name, valid until the next
+	 * bfs_readdir() or bfs_polldir() call.
+	 */
+	const struct bfs_stat *lstat;
 };
 
 /**
@@ -100,8 +117,10 @@ void bfs_dir_arena(struct arena *arena);
 enum bfs_dir_flags {
 	/** Include whiteouts in the results. */
 	BFS_DIR_WHITEOUTS = 1 << 0,
+	/** Read bfs_stat(BFS_STAT_NOFOLLOW) info along with each entry, if supported. */
+	BFS_DIR_STAT      = 1 << 1,
 	/** @internal Start of private flags. */
-	BFS_DIR_PRIVATE   = 1 << 1,
+	BFS_DIR_PRIVATE   = 1 << 2,
 };
 
 /**
@@ -160,7 +179,7 @@ int bfs_closedir(struct bfs_dir *dir);
  * Whether the bfs_unwrapdir() function is supported.
  */
 #ifndef BFS_USE_UNWRAPDIR
-#  define BFS_USE_UNWRAPDIR (BFS_USE_GETDENTS || BFS_HAS_FDCLOSEDIR)
+#  define BFS_USE_UNWRAPDIR (BFS_USE_GETDENTS || BFS_USE_GETATTRLISTBULK || BFS_HAS_FDCLOSEDIR)
 #endif
 
 #if BFS_USE_UNWRAPDIR
