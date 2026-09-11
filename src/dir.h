@@ -27,12 +27,17 @@
 #endif
 
 /**
- * Whether the implementation uses getattrlistbulk() (macOS), which returns
- * directory entries together with their bfs_stat(BFS_STAT_NOFOLLOW) info.
+ * Whether the implementation uses getattrlistbulk() (macOS).  It returns
+ * directory entries together with their stat info.
  */
 #ifndef BFS_USE_GETATTRLISTBULK
 #  define BFS_USE_GETATTRLISTBULK (__APPLE__ && BFS_HAS_GETATTRLISTBULK && !BFS_USE_GETDENTS)
 #endif
+
+/**
+ * Whether bfs_opendir() honors BFS_DIR_STAT.
+ */
+#define BFS_USE_DIR_STAT BFS_USE_GETATTRLISTBULK
 
 /**
  * A directory.
@@ -85,10 +90,10 @@ struct bfs_dirent {
 	/** The name of this file. */
 	const char *name;
 	/**
-	 * bfs_stat(BFS_STAT_NOFOLLOW) info for this file, or NULL if unavailable.
-	 * Only filled when the directory was opened with BFS_DIR_STAT and the
-	 * implementation supports it.  Like name, valid until the next
-	 * bfs_readdir() or bfs_polldir() call.
+	 * Stat info for this file, as bfs_stat(BFS_STAT_NOFOLLOW) would return
+	 * it, or NULL if unavailable.  Only filled when the directory was opened
+	 * with BFS_DIR_STAT and the implementation supports it.  Like name, valid
+	 * until the next bfs_readdir() or bfs_polldir() call.
 	 */
 	const struct bfs_stat *lstat;
 };
@@ -117,7 +122,7 @@ void bfs_dir_arena(struct arena *arena);
 enum bfs_dir_flags {
 	/** Include whiteouts in the results. */
 	BFS_DIR_WHITEOUTS = 1 << 0,
-	/** Read bfs_stat(BFS_STAT_NOFOLLOW) info along with each entry, if supported. */
+	/** Read stat info along with each entry, if supported. */
 	BFS_DIR_STAT      = 1 << 1,
 	/** @internal Start of private flags. */
 	BFS_DIR_PRIVATE   = 1 << 2,

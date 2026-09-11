@@ -143,7 +143,10 @@ struct bfs_dir {
 	unsigned short pos;
 	/** Bytes of valid records in buf. */
 	unsigned short size;
-	/** readdir() fallback for filesystems without getattrlistbulk() support, else NULL. */
+	/**
+	 * The readdir() implementation, used without BFS_DIR_STAT and for
+	 * filesystems without getattrlistbulk() support, else NULL.
+	 */
 	DIR *dir;
 	/** The pending readdir() entry, if any. */
 	struct dirent *de;
@@ -207,8 +210,8 @@ static int bfs_polldir_readdir(struct bfs_dir *dir) {
 
 #if BFS_USE_GETATTRLISTBULK
 
-/** Attributes requested for every directory entry. */
-#define BFS_ATTR_CMN_NAMES (ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ERROR | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE)
+/** Attributes required to fill a struct bfs_dirent. */
+#define BFS_ATTR_CMN_DIRENT (ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ERROR | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE)
 
 /** Common attributes required to fill a struct bfs_stat. */
 #define BFS_ATTR_CMN_STAT ( \
@@ -225,16 +228,14 @@ static int bfs_polldir_readdir(struct bfs_dir *dir) {
 /** File attributes required to fill a struct bfs_stat. */
 #define BFS_ATTR_FILE_STAT (ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE | ATTR_FILE_DATALENGTH)
 
-/** The attribute request for bfs_opendir() without BFS_DIR_STAT. */
-static const struct attrlist bfs_attrlist_names = {
-	.bitmapcount = ATTR_BIT_MAP_COUNT,
-	.commonattr = BFS_ATTR_CMN_NAMES,
-};
-
-/** The attribute request for bfs_opendir() with BFS_DIR_STAT. */
+/**
+ * The getattrlistbulk() request.  Directories opened without BFS_DIR_STAT use
+ * readdir() instead, since getattrlistbulk() is slower than readdir() even
+ * when only names and types are requested.
+ */
 static const struct attrlist bfs_attrlist_stat = {
 	.bitmapcount = ATTR_BIT_MAP_COUNT,
-	.commonattr = BFS_ATTR_CMN_NAMES | BFS_ATTR_CMN_STAT | ATTR_CMN_CRTIME,
+	.commonattr = BFS_ATTR_CMN_DIRENT | BFS_ATTR_CMN_STAT | ATTR_CMN_CRTIME,
 	.fileattr = BFS_ATTR_FILE_STAT,
 };
 
@@ -247,11 +248,11 @@ static const struct attrlist bfs_attrlist_stat = {
  * @return
  *         The number of bytes of records read, 0 at EOF, or -1 on failure.
  */
-static ssize_t bfs_getattrlistbulk(struct bfs_dir *dir, char *buf, size_t size) {
-	struct attrlist attrs = (dir->flags & BFS_DIR_STAT) ? bfs_attrlist_stat : bfs_attrlist_names;
+static ssize_t bfs_getattrlistbulk(int fd, char *buf, size_t size) {
+	struct attrlist attrs = bfs_attrlist_stat;
 
 	sanitize_uninit(buf, size);
-	int count = getattrlistbulk(dir->fd, &attrs, buf, size, 0);
+	int count = getattrlistbulk(fd, &attrs, buf, size, 0);
 	if (count <= 0) {
 		return count;
 	}
@@ -309,7 +310,7 @@ struct bfs_attrcur {
 	const char *end;
 };
 
-/** Read the next attribute, which is only 4-byte aligned, out of a record. */
+/** Read the next attribute out of a record.  Attributes are only 4-byte aligned. */
 static bool bfs_attr_take(struct bfs_attrcur *cur, void *dest, size_t size) {
 	if ((size_t)(cur->end - cur->ptr) < size) {
 		return false;
@@ -323,6 +324,31 @@ static bool bfs_attr_take(struct bfs_attrcur *cur, void *dest, size_t size) {
 /** Read the next attribute if its bit was returned. */
 #define BFS_ATTR_TAKE(cur, returned, bit, dest) \
 	(!((returned) & (bit)) || bfs_attr_take(cur, dest, sizeof(*(dest))))
+
+/**
+ * Read the entry name out of a record.
+ *
+ * @return
+ *         true if the name was returned and is NUL-terminated within the record.
+ */
+static bool bfs_attr_name(struct bfs_attrcur *cur, attrgroup_t cmn, const char **name) {
+	const char *base = cur->ptr;
+	attrreference_t ref;
+	if (!(cmn & ATTR_CMN_NAME) || !bfs_attr_take(cur, &ref, sizeof(ref))) {
+		return false;
+	}
+
+	if (ref.attr_dataoffset < 0 || ref.attr_dataoffset > cur->end - base) {
+		return false;
+	}
+	base += ref.attr_dataoffset;
+	if (ref.attr_length > (size_t)(cur->end - base) || !memchr(base, '\0', ref.attr_length)) {
+		return false;
+	}
+
+	*name = base;
+	return true;
+}
 
 /**
  * Fill a struct bfs_stat from the attributes of a regular file, symlink,
@@ -416,16 +442,8 @@ static int bfs_parse_attrs(struct bfs_dir *dir, const char *record, uint32_t len
 		goto malformed;
 	}
 
-	attrreference_t nameref;
-	const char *name = cur.ptr;
-	if (!(cmn & ATTR_CMN_NAME) || !bfs_attr_take(&cur, &nameref, sizeof(nameref))) {
-		goto malformed;
-	}
-	if (nameref.attr_dataoffset < 0 || nameref.attr_dataoffset > cur.end - name) {
-		goto malformed;
-	}
-	name += nameref.attr_dataoffset;
-	if (nameref.attr_length > (size_t)(cur.end - name) || !memchr(name, '\0', nameref.attr_length)) {
+	const char *name;
+	if (!bfs_attr_name(&cur, cmn, &name)) {
 		goto malformed;
 	}
 
@@ -467,9 +485,6 @@ static int bfs_parse_attrs(struct bfs_dir *dir, const char *record, uint32_t len
 	default:
 		return 1;
 	}
-	if (!(dir->flags & BFS_DIR_STAT)) {
-		return 1;
-	}
 
 	if (bfs_attrs_to_stat(&cur, &returned, dev, ifmt, &dir->lstat_buf)) {
 		de->lstat = &dir->lstat_buf;
@@ -498,12 +513,14 @@ static int bfs_polldir_attrs(struct bfs_dir *dir) {
 	}
 
 	char *buf = dir->buf;
-	ssize_t size = bfs_getattrlistbulk(dir, buf, BUF_SIZE);
+	ssize_t size = bfs_getattrlistbulk(dir->fd, buf, BUF_SIZE);
 	if (size == 0) {
 		dir->flags |= BFS_DIR_EOF;
 		return 0;
 	} else if (size < 0) {
-		// Nothing has been read yet, so mixing in readdir() is well-defined
+		// Nothing has been read yet, so mixing in readdir() is well-defined.
+		// EINVAL would also hide a malformed attribute request; the unit
+		// test on APFS guards against that.
 		bool unread = dir->size == 0;
 		if (unread && (errno == ENOTSUP || errno == EINVAL)) {
 			return bfs_attr_fallback(dir);
@@ -515,10 +532,11 @@ static int bfs_polldir_attrs(struct bfs_dir *dir) {
 	dir->size = size;
 
 	// Like getdents(), EOF is only indicated by a call returning zero.
-	// Check that eagerly here to hopefully avoid a syscall in the last bfs_readdir().
+	// Check that eagerly here to avoid a syscall in the last bfs_readdir()
+	// when the rest of the directory fits.
 	size_t rest = BUF_SIZE - size;
 	if (rest >= BFS_ATTRBUF_MIN) {
-		size = bfs_getattrlistbulk(dir, buf + size, rest);
+		size = bfs_getattrlistbulk(dir->fd, buf + size, rest);
 		if (size > 0) {
 			dir->size += size;
 		} else if (size == 0) {
@@ -529,7 +547,7 @@ static int bfs_polldir_attrs(struct bfs_dir *dir) {
 	return 1;
 }
 
-/** Read the next getattrlistbulk() record, if there is one. */
+/** Read the polled getattrlistbulk() record. */
 static int bfs_readdir_attrs(struct bfs_dir *dir, struct bfs_dirent *de) {
 	const char *record = dir->buf + dir->pos;
 	uint32_t length;
@@ -568,13 +586,19 @@ int bfs_opendir(struct bfs_dir *dir, int at_fd, const char *at_path, enum bfs_di
 		trie_init(&dir->trie);
 	}
 #  endif
-#elif BFS_USE_GETATTRLISTBULK
+#else
+#  if BFS_USE_GETATTRLISTBULK
 	dir->fd = fd;
 	dir->pos = 0;
 	dir->size = 0;
 	dir->dir = NULL;
 	dir->de = NULL;
-#else
+
+	if (flags & BFS_DIR_STAT) {
+		return 0;
+	}
+#  endif
+
 	if (bfs_fdopendir(dir, fd) != 0) {
 		if (at_path) {
 			close_quietly(fd);
