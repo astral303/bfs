@@ -2329,6 +2329,14 @@ static float estimate_stat_odds(struct bfs_ctx *ctx) {
 	return 1.0 - nostat_odds;
 }
 
+/**
+ * The stat() odds above which directory entries are read with their stat
+ * info (BFTW_DIR_STAT), when the platform supports it.  On APFS, reading the
+ * stat info of every entry costs about a third of one stat() call per entry
+ * over a plain readdir().
+ */
+#define BFS_DIR_STAT_ODDS 0.35
+
 /** Matches -(exec|ok) ... \; */
 static bool single_exec(const struct bfs_expr *expr) {
 	return expr->eval_fn == eval_exec && !(expr->exec->flags & BFS_EXEC_MULTI);
@@ -2406,10 +2414,20 @@ int bfs_optimize(struct bfs_ctx *ctx) {
 		// bftw() can do eager stat() calls in parallel
 		float eager_cost = 1.0 / ctx->threads;
 
-		if (eager_cost <= lazy_cost) {
+		bool eager_stat = eager_cost <= lazy_cost;
+		bool dir_stat = BFS_USE_DIR_STAT && lazy_cost >= BFS_DIR_STAT_ODDS;
+
+		if (eager_stat || dir_stat) {
 			opt_enter(&opt, "lazy stat cost: ${ylw}%g${rs}\n", lazy_cost);
-			ctx->flags |= BFTW_STAT;
-			opt_leave(&opt, "eager stat cost: ${ylw}%g${rs}\n", eager_cost);
+			if (eager_stat) {
+				ctx->flags |= BFTW_STAT;
+				opt_debug(&opt, "eager stat cost: ${ylw}%g${rs}\n", eager_cost);
+			}
+			if (dir_stat) {
+				ctx->flags |= BFTW_DIR_STAT;
+				opt_debug(&opt, "reading stat info with directory entries\n");
+			}
+			opt_leave(&opt, NULL);
 		}
 
 #ifndef POSIX_SPAWN_SETRLIMIT
