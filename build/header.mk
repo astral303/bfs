@@ -30,6 +30,7 @@ HEADERS := \
     gen/has/extattr-list-link.h \
     gen/has/fchdir.h \
     gen/has/fdclosedir.h \
+    gen/has/getattrlistbulk.h \
     gen/has/getdents.h \
     gen/has/getdents64-syscall.h \
     gen/has/getdents64.h \
