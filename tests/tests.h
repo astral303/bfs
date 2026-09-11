@@ -21,6 +21,9 @@ void check_bfstd(void);
 /** Bit manipulation tests. */
 void check_bit(void);
 
+/** Directory reading tests. */
+void check_dir(void);
+
 /** I/O queue tests. */
 void check_ioq(void);
 

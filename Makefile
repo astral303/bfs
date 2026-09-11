@@ -152,6 +152,7 @@ UNIT_OBJS := \
     obj/tests/alloc.o \
     obj/tests/bfstd.o \
     obj/tests/bit.o \
+    obj/tests/dir.o \
     obj/tests/ioq.o \
     obj/tests/list.o \
     obj/tests/main.o \
