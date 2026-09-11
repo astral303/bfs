@@ -1,6 +1,17 @@
 4.*
 ===
 
+Unreleased
+----------
+
+## Changes
+
+- On macOS, `bfs` now reads stat info together with directory entries
+  using `getattrlistbulk()` whenever the search is likely to need it, instead
+  of calling `fstatat()` on every file.  Searches that stat every file (for
+  example colored output with `-j10`, `-newer`, or `-printf`) are about 1.5x
+  to 3x faster (on APFS trees of 10k to 150k files).
+
 4.1.4
 -----
 
